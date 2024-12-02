@@ -1,0 +1,106 @@
+//===============================
+// FILE: vfd_keypad.c
+//===============================
+#include "vfd_keypad.h"
+
+Keypad_Control* keypad_init(void) {
+    Keypad_Control* keypad = malloc(sizeof(Keypad_Control));
+    if (!keypad) return NULL;
+
+    printf("Opening I2C device...\n");
+    keypad->file = open(I2C_DEVICE, O_RDWR);
+    if (keypad->file < 0) {
+        perror("Failed to open the I2C bus");
+        free(keypad);
+        return NULL;
+    }
+
+    printf("Setting I2C slave address to 0x%X...\n", I2C_ADDR);
+    if (ioctl(keypad->file, I2C_SLAVE, I2C_ADDR) < 0) {
+        perror("Failed to acquire bus access and/or talk to slave");
+        close(keypad->file);
+        free(keypad);
+        return NULL;
+    }
+
+    keypad->key_pressed = 0;
+    keypad->last_key = 0;
+    printf("Keypad initialization complete\n");
+
+    return keypad;
+}
+
+void keypad_cleanup(Keypad_Control* keypad) {
+    if (!keypad) return;
+    close(keypad->file);
+    free(keypad);
+}
+
+void read_keypad(Keypad_Control* keypad) {
+    if (!keypad) return;
+
+    char row_select[4] = {0xEF, 0xDF, 0xBF, 0x7F}; // Row selection signals
+    char buffer[1] = {0}; // Buffer to store read data
+
+    for (int i = 0; i < 4; ++i) {
+        if (write(keypad->file, &row_select[i], 1) != 1) {
+            perror("Failed to write to the I2C device");
+            continue;
+        }
+
+        usleep(10000); // 10ms delay to match working code
+
+        if (read(keypad->file, buffer, 1) != 1) {
+            perror("Failed to read from the I2C device");
+            continue;
+        }
+
+        // Print raw value for debugging
+        printf("Row %d Read: 0x%02X\n", i, buffer[0] & 0xFF);
+
+        char key = 0;
+        switch (buffer[0]) {
+            case 0xEE: key = '1'; break;
+            case 0xED: key = '5'; break;
+            case 0xEB: key = '9'; break;
+            case 0xE7: key = 'A'; break; // F3
+            case 0xDE: key = '2'; break;
+            case 0xDD: key = '6'; break;
+            case 0xDB: key = '0'; break;
+            case 0xD7: key = 'B'; break; // F4
+            case 0xBE: key = '3'; break;
+            case 0xBD: key = '7'; break;
+            case 0xBB: key = '*'; break; // C*
+            case 0xB7: key = 'C'; break; // F1
+            case 0x7E: key = '4'; break;
+            case 0x7D: key = '8'; break;
+            case 0x7B: key = '#'; break; // F#
+            case 0x77: key = 'D'; break; // F2
+        }
+
+        if (key != 0 && key != keypad->last_key) {
+            printf("Key detected: %c\n", key);
+            keypad->last_key = key;
+            keypad->key_pressed = 1;
+            break;
+        }
+    }
+
+    // Add delay between scans to match working code
+    usleep(500000); // 500ms delay between scans
+}
+
+const char* get_key_name(char key) {
+    static char name[20];
+    switch (key) {
+        case 'A': return "F3";
+        case 'B': return "F4";
+        case 'C': return "F1";
+        case 'D': return "F2";
+        case '*': return "C*";
+        case '#': return "F#";
+        default:
+            snprintf(name, sizeof(name), "%c", key);
+            return name;
+    }
+}

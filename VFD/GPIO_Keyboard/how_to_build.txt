@@ -1,0 +1,1 @@
+gcc -o vfd_control main.c vfd_display.c vfd_gpio.c -lpigpio -L/usr/local/lib -lws2811 -I/usr/local/include/ws2811 -Wall

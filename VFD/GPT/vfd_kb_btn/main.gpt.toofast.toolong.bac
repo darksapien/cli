@@ -1,0 +1,90 @@
+//Compiles with
+//gcc -o vfd_test main.c vfd_gpio.c vfd_display.c -lws2811 -lpigpio -lm -pthread -Wall -I/usr/local/include -L/usr/local/lib
+#include <stdio.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <string.h>
+#include <pigpio.h>
+
+#include "vfd_display.h"
+#include "vfd_gpio.h"
+#include "vfd_keyboard.h"
+
+#define SPI_CHANNEL 0
+#define SPI_SPEED 1000000 // 1 MHz
+#define MCP3008_CHANNELS 8
+
+VFD_Display* vfd = NULL;
+GPIO_Control* gpio = NULL;
+
+// Read from MCP3008 using pigpio SPI
+int read_mcp3008(int channel) {
+    if (channel < 0 || channel >= MCP3008_CHANNELS) {
+        fprintf(stderr, "Invalid MCP3008 channel: %d\n", channel);
+        return -1;
+    }
+
+    char tx_buffer[3], rx_buffer[3];
+    tx_buffer[0] = 1;                      // Start bit
+    tx_buffer[1] = (8 + channel) << 4;     // SGL/DIF=1, D2=D1=D0=0, channel selection
+    tx_buffer[2] = 0;                      // Don't care
+
+    spiXfer(SPI_CHANNEL, tx_buffer, rx_buffer, 3);
+
+    int value = ((rx_buffer[1] & 3) << 8) | rx_buffer[2]; // 10-bit result
+    return value;
+}
+
+// Cleanup on signal
+void cleanup(int signum) {
+    if (vfd) vfd_close(vfd);
+    if (gpio) gpio_cleanup(gpio);
+    keyboard_restore();
+    gpioTerminate();
+    exit(signum);
+}
+
+int main() {
+    // Signal handling
+    signal(SIGINT, cleanup);
+    signal(SIGTERM, cleanup);
+
+    // Initialize pigpio
+    if (gpioInitialise() < 0) {
+        fprintf(stderr, "Failed to initialize pigpio\n");
+        return 1;
+    }
+
+    // Initialize SPI
+    if (spiOpen(SPI_CHANNEL, SPI_SPEED, 0) < 0) {
+        fprintf(stderr, "Failed to open SPI channel\n");
+        gpioTerminate();
+        return 1;
+    }
+
+    // Initialize VFD
+    vfd = vfd_init("/dev/ttyUSB0");
+    if (!vfd) {
+        fprintf(stderr, "Failed to initialize VFD display: %s\n", strerror(errno));
+        spiClose(SPI_CHANNEL);
+        gpioTerminate();
+        return 1;
+    }
+
+    // Main loop
+    while (1) {
+     for (int i = 0; i < MCP3008_CHANNELS; i++) {
+            int value = read_mcp3008(i);
+            if (value >= 0) {
+                char buffer[32];
+                snprintf(buffer, sizeof(buffer), "CH%d: %d\n", i, value); // Format with newline
+                vfd_write(vfd, buffer); // Use vfd_write to display
+            }
+        }
+        usleep(500000); // 500ms delay
+    }
+
+    cleanup(0);
+    return 0;
+}
+

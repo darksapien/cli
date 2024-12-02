@@ -1,0 +1,702 @@
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# File: ./main.c
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+//===============================
+// FILE: main.c
+// compiles with gcc -o vfd_test main.c vfd_gpio.c vfd_display.c -lws2811 -lpigpio -lm -pthread -Wall -I/usr/local/include -L/usr/local/lib
+//===============================
+#include "vfd_display.h"
+#include "vfd_keyboard.h"
+#include "vfd_gpio.h"
+#include <errno.h>
+#include <signal.h>
+
+VFD_Display* vfd = NULL;
+GPIO_Control* gpio = NULL;
+
+void cleanup(int signum) {
+    if (vfd) vfd_close(vfd);
+    if (gpio) gpio_cleanup(gpio);
+    keyboard_restore();
+    exit(signum);
+}
+
+int main() {
+    // Set up signal handlers
+    signal(SIGINT, cleanup);
+    signal(SIGTERM, cleanup);
+
+    // Initialize VFD
+    vfd = vfd_init("/dev/ttyUSB0");
+    if (!vfd) {
+        fprintf(stderr, "Failed to initialize VFD display: %s\n", strerror(errno));
+        return 1;
+    }
+
+    // Initialize GPIO and NeoPixel
+    gpio = gpio_init();
+    if (!gpio) {
+        fprintf(stderr, "Failed to initialize GPIO control\n");
+        cleanup(1);
+        return 1;
+    }
+
+    // Clear display and prepare keyboard
+    vfd_clear(vfd);
+    keyboard_raw_mode();
+
+    // Show initial mode
+    show_mode_instructions(vfd, gpio->current_mode);
+    update_neopixel_mode(gpio);
+
+    // Main loop
+    while (1) {
+        // Check for mode changes
+        if (gpio->mode_changed) {
+            gpio->mode_changed = 0;
+            show_mode_instructions(vfd, gpio->current_mode);
+            continue;
+        }
+
+        // Handle input based on current mode
+        switch (gpio->current_mode) {
+            case MODE_SSH:
+            case MODE_LOCAL_KB: {
+                int c = read_key();
+                if (c < 0) continue;
+
+                // Handle special keys
+                switch (c) {
+                    case 1001:  // Up arrow
+                        write(vfd->fd, VFD_CURSOR_UP, 2);
+                        break;
+
+                    case 1002:  // Down arrow
+                        write(vfd->fd, VFD_NEWLINE, 2);
+                        break;
+
+                    case 1003:  // Right arrow
+                        write(vfd->fd, "\x09", 1);
+                        break;
+
+                    case 1004:  // Left arrow
+                        write(vfd->fd, "\x08", 1);
+                        break;
+
+                    case 1005:  // Delete
+                        write(vfd->fd, "\x19\x10", 2);
+                        break;
+
+                    case 127:   // Backspace
+                    case 8:     // Also handle Ctrl-H backspace
+                        write(vfd->fd, "\x08", 1);
+                        write(vfd->fd, "\x19\x10", 2);
+                        break;
+
+                    case 13:    // Enter
+                        write(vfd->fd, VFD_NEWLINE, 2);
+                        break;
+
+                    default:
+                        // Regular printable character
+                        if (c >= 32 && c <= 126) {
+                            write(vfd->fd, &c, 1);
+                        }
+                        break;
+                }
+                break;
+            }
+
+            case MODE_AUTO:
+                // In auto mode, could read from a file or message queue
+                // For now, just show a simple message
+                vfd_write(vfd, "Auto mode active... \n");
+                sleep(2);
+                break;
+        }
+    }
+
+    cleanup(0);
+    return 0;
+}
+
+
+
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# File: ./vfd_display.c
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+//===============================
+// FILE: vfd_display.c
+//===============================
+#include "vfd_display.h"
+
+VFD_Display* vfd_init(const char* port) {
+    VFD_Display* vfd = malloc(sizeof(VFD_Display));
+    if (!vfd) return NULL;
+
+    // Open port with specific flags
+    vfd->fd = open(port, O_RDWR | O_NOCTTY | O_NDELAY);
+    if (vfd->fd < 0) {
+        free(vfd);
+        return NULL;
+    }
+
+    // Get current settings
+    tcgetattr(vfd->fd, &vfd->old_tio);
+    memset(&vfd->new_tio, 0, sizeof(struct termios));
+
+    // Configure port settings (7E1)
+    // Clear all flags first
+    vfd->new_tio.c_cflag = 0;
+    vfd->new_tio.c_iflag = 0;
+    vfd->new_tio.c_oflag = 0;
+    vfd->new_tio.c_lflag = 0;
+
+    // Set the exact flags we need
+    vfd->new_tio.c_cflag = CS7 | PARENB | CREAD | CLOCAL;
+    vfd->new_tio.c_cc[VMIN] = 0;  // Non-blocking read
+    vfd->new_tio.c_cc[VTIME] = 10; // 1 second timeout
+
+    // Set baud rate
+    cfsetispeed(&vfd->new_tio, B9600);
+    cfsetospeed(&vfd->new_tio, B9600);
+
+    // Flush port and apply settings
+    tcflush(vfd->fd, TCIOFLUSH);
+    tcsetattr(vfd->fd, TCSANOW, &vfd->new_tio);
+
+    // Enable RTS explicitly
+    int flags;
+    if (ioctl(vfd->fd, TIOCMGET, &flags) != -1) {
+        flags |= TIOCM_RTS;
+        ioctl(vfd->fd, TIOCMSET, &flags);
+    }
+
+    // Wait for display to stabilize
+    usleep(100000);  // 100ms delay
+
+    vfd->current_row = 0;
+    vfd->current_col = 0;
+
+    return vfd;
+}
+
+void vfd_close(VFD_Display* vfd) {
+    if (!vfd) return;
+    tcsetattr(vfd->fd, TCSANOW, &vfd->old_tio);
+    close(vfd->fd);
+    free(vfd);
+}
+
+void vfd_clear(VFD_Display* vfd) {
+    if (!vfd) return;
+    write(vfd->fd, VFD_CLEAR, 2);
+    usleep(50000);  // 50ms delay
+    vfd->current_row = 0;
+    vfd->current_col = 0;
+}
+
+void vfd_write(VFD_Display* vfd, const char* text) {
+    if (!vfd || !text) return;
+
+    size_t len = strlen(text);
+    size_t pos = 0;
+
+    while (pos < len) {
+        if (text[pos] == '\n') {
+            // Handle newline with CR+LF
+            write(vfd->fd, "\x0D\x0A", 2);
+            vfd->current_col = 0;
+            vfd->current_row++;
+            if (vfd->current_row >= VFD_ROWS) {
+                vfd->current_row = VFD_ROWS - 1;
+            }
+        } else {
+            // Handle regular character
+            write(vfd->fd, &text[pos], 1);
+            vfd->current_col++;
+            if (vfd->current_col >= VFD_COLS) {
+                write(vfd->fd, "\x0D\x0A", 2);
+                vfd->current_col = 0;
+                vfd->current_row++;
+                if (vfd->current_row >= VFD_ROWS) {
+                    vfd->current_row = VFD_ROWS - 1;
+                }
+            }
+        }
+        pos++;
+    }
+}
+
+char* vfd_read(VFD_Display* vfd) {
+    if (!vfd) return NULL;
+
+    // Send query command
+    write(vfd->fd, VFD_QUERY, 2);
+    usleep(50000);  // Wait 50ms for response
+
+    // Allocate buffer for response
+    // Maximum possible size plus extra room for any control characters
+    char* buffer = malloc(VFD_ROWS * VFD_COLS + 10);
+    if (!buffer) return NULL;
+
+    // Read response with timeout
+    int total_read = 0;
+    int attempts = 0;
+    const int max_attempts = 10;
+
+    // Keep reading until we timeout
+    while (attempts < max_attempts) {
+        int bytes = read(vfd->fd, buffer + total_read,
+                        (VFD_ROWS * VFD_COLS + 10) - total_read);
+        if (bytes > 0) {
+            total_read += bytes;
+            attempts = 0;  // Reset attempts if we got data
+        } else {
+            usleep(10000);  // Wait 10ms before next attempt
+            attempts++;
+        }
+    }
+
+    if (total_read == 0) {
+        free(buffer);
+        return NULL;
+    }
+
+    // Add null terminator after whatever we received
+    buffer[total_read] = '\0';
+
+    return buffer;
+}
+
+
+
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# File: ./vfd_display.h
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+//===============================
+// FILE: vfd_display.h
+//===============================
+#ifndef VFD_DISPLAY_H
+#define VFD_DISPLAY_H
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <termios.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#include <linux/serial.h>
+
+#define VFD_ROWS 6
+#define VFD_COLS 40
+#define VFD_CLEAR "\x19\x0C"
+#define VFD_HOME "\x19\x0E"
+#define VFD_BLINK_START "\x0B"
+#define VFD_BLINK_END "\x0C"
+#define VFD_BRIGHT "\x19\x4F"
+#define VFD_SCROLL "\x10"
+#define VFD_NEWLINE "\x0D\x0A"
+#define VFD_CURSOR_UP "\x19\x0B"
+#define VFD_CURSOR_POS "\x19\x11"
+#define VFD_QUERY "\x04\x00"
+
+typedef struct {
+    int fd;
+    struct termios old_tio;
+    struct termios new_tio;
+    int current_row;
+    int current_col;
+} VFD_Display;
+
+// Function declarations
+VFD_Display* vfd_init(const char* port);
+void vfd_close(VFD_Display* vfd);
+void vfd_clear(VFD_Display* vfd);
+void vfd_write(VFD_Display* vfd, const char* text);
+char* vfd_read(VFD_Display* vfd);
+
+#endif
+
+
+
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# File: ./vfd_gpio.c
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+//===============================
+// FILE: vfd_gpio.c
+//===============================
+#include "vfd_gpio.h"
+#include <unistd.h>  // For usleep
+
+// Global pointer for callback access
+static GPIO_Control* g_gpio_control = NULL;
+
+void button_callback(int gpio_pin, int level, uint32_t tick) {
+    printf("Callback triggered: pin=%d, level=%d\n", gpio_pin, level);
+    
+    if (!g_gpio_control) {
+        printf("Error: g_gpio_control is NULL!\n");
+        return;
+    }
+    
+    // Simple debounce
+    if (tick - g_gpio_control->button_debounce < 200000) {
+        printf("Debounce skip\n");
+        return;
+    }
+    g_gpio_control->button_debounce = tick;
+    
+    if (level == 1) { // Button pressed (active high)
+        printf("Button press detected, changing mode from %d to %d\n", 
+               g_gpio_control->current_mode, 
+               (g_gpio_control->current_mode + 1) % MODE_COUNT);
+               
+        g_gpio_control->current_mode = (g_gpio_control->current_mode + 1) % MODE_COUNT;
+        g_gpio_control->mode_changed = 1;
+        update_neopixel_mode(g_gpio_control);
+    }
+}
+
+void update_neopixel_mode(GPIO_Control* gpio) {
+    if (!gpio) return;
+
+    uint32_t color;
+    switch (gpio->current_mode) {
+        case MODE_SSH:
+            color = COLOR_SSH;
+            break;
+        case MODE_LOCAL_KB:
+            color = COLOR_LOCAL;
+            break;
+        case MODE_AUTO:
+            color = COLOR_AUTO;
+            break;
+        default:
+            color = COLOR_OFF;
+            break;
+    }
+
+    // Update all LEDs to show current mode
+    for (int i = 0; i < LED_COUNT; i++) {
+        gpio->ws2811.channel[0].leds[i] = color;
+    }
+    ws2811_render(&gpio->ws2811);
+}
+
+GPIO_Control* gpio_init(void) {
+    printf("Starting GPIO initialization...\n");
+    
+    GPIO_Control* gpio = malloc(sizeof(GPIO_Control));
+    if (!gpio) {
+        printf("Failed to allocate GPIO structure\n");
+        return NULL;
+    }
+
+    printf("Setting up global reference...\n");
+    // Store global reference for callback
+    g_gpio_control = gpio;
+
+    // Initialize pigpio without daemon
+    printf("Initializing pigpio...\n");
+    gpioCfgSetInternals(1<<10);  // Configure for non-daemon operation
+    int init_result = gpioInitialise();
+    if (init_result < 0) {
+        printf("Failed to initialize pigpio: %d\n", init_result);
+        free(gpio);
+        return NULL;
+    }
+
+    // Initialize button pin (GPIO 22 = Physical pin 16)
+    printf("Setting up button pin...\n");
+    if (gpioSetMode(MODE_BUTTON_PIN, PI_INPUT) != 0) {
+        printf("Failed to set pin mode\n");
+        gpioTerminate();
+        free(gpio);
+        return NULL;
+    }
+    
+    if (gpioSetPullUpDown(MODE_BUTTON_PIN, PI_PUD_DOWN) != 0) {
+        printf("Failed to set pull-down resistor\n");
+        gpioTerminate();
+        free(gpio);
+        return NULL;
+    }
+
+    // Initialize NeoPixel
+    printf("Initializing NeoPixel...\n");
+    memset(&gpio->ws2811, 0, sizeof(ws2811_t));
+    gpio->ws2811.freq = LED_FREQ;
+    gpio->ws2811.dmanum = LED_DMA;
+    gpio->ws2811.channel[0].gpionum = NEOPIXEL_PIN;
+    gpio->ws2811.channel[0].count = LED_COUNT;
+    gpio->ws2811.channel[0].invert = LED_INVERT;
+    gpio->ws2811.channel[0].brightness = 128;
+    gpio->ws2811.channel[0].strip_type = LED_STRIP;
+
+    if (ws2811_init(&gpio->ws2811) != WS2811_SUCCESS) {
+        printf("Failed to initialize WS2811\n");
+        gpioTerminate();
+        free(gpio);
+        return NULL;
+    }
+
+    gpio->current_mode = MODE_SSH;
+    gpio->button_debounce = 0;
+    gpio->mode_changed = 0;
+
+    // Set up GPIO monitoring for button
+    printf("Setting up GPIO monitoring...\n");
+    int alert_result = gpioSetAlertFunc(MODE_BUTTON_PIN, button_callback);
+    if (alert_result != 0) {
+        printf("Failed to set alert function: %d\n", alert_result);
+        gpioTerminate();
+        free(gpio);
+        return NULL;
+    }
+
+    // Enable alert for pin changes
+    printf("Enabling GPIO alerts...\n");
+    if (gpioSetPullUpDown(MODE_BUTTON_PIN, PI_PUD_DOWN) != 0 ||
+        gpioGlitchFilter(MODE_BUTTON_PIN, 100000) != 0 ||  // 100ms glitch filter
+        gpioSetWatchdog(MODE_BUTTON_PIN, 0) != 0) {        // Disable watchdog
+        printf("Failed to configure GPIO monitoring\n");
+        gpioTerminate();
+        free(gpio);
+        return NULL;
+    }
+
+    // Initial NeoPixel update
+    printf("Updating NeoPixel initial state...\n");
+    update_neopixel_mode(gpio);
+    
+    printf("GPIO initialization complete\n");
+    return gpio;
+}
+
+void gpio_cleanup(GPIO_Control* gpio) {
+    if (!gpio) return;
+    
+    // Clear NeoPixels
+    for (int i = 0; i < LED_COUNT; i++) {
+        gpio->ws2811.channel[0].leds[i] = COLOR_OFF;
+    }
+    ws2811_render(&gpio->ws2811);
+    ws2811_fini(&gpio->ws2811);
+    
+    // Cleanup GPIO
+    gpioSetMode(MODE_BUTTON_PIN, PI_INPUT);
+    gpioSetPullUpDown(MODE_BUTTON_PIN, PI_PUD_DOWN);  // Keep pull-down on cleanup
+    gpioTerminate();
+    
+    g_gpio_control = NULL;
+    free(gpio);
+}
+
+const char* get_mode_name(VFD_Mode mode) {
+    switch (mode) {
+        case MODE_SSH:
+            return "SSH Keyboard Input";
+        case MODE_LOCAL_KB:
+            return "Local Keyboard Input";
+        case MODE_AUTO:
+            return "Automatic Display";
+        default:
+            return "Unknown Mode";
+    }
+}
+
+void show_mode_instructions(VFD_Display* vfd, VFD_Mode mode) {
+    if (!vfd) return;
+    
+    vfd_clear(vfd);
+    
+    char buffer[128];
+    snprintf(buffer, sizeof(buffer), "Mode: %s\n", get_mode_name(mode));
+    vfd_write(vfd, buffer);
+    
+    switch (mode) {
+        case MODE_SSH:
+            vfd_write(vfd, "SSH keyboard input active\n");
+            vfd_write(vfd, "Use terminal to type\n");
+            break;
+            
+        case MODE_LOCAL_KB:
+            vfd_write(vfd, "Local keyboard input active\n");
+            vfd_write(vfd, "Connect USB keyboard to use\n");
+            break;
+            
+        case MODE_AUTO:
+            vfd_write(vfd, "Auto display mode active\n");
+            vfd_write(vfd, "Messages will display automatically\n");
+            break;
+    }
+    
+    // Brief delay to show instructions
+    usleep(2000000); // 2 second delay
+    vfd_clear(vfd);
+}
+
+
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# File: ./vfd_gpio.h
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+//===============================
+// FILE: vfd_gpio.h
+//===============================
+#ifndef VFD_GPIO_H
+#define VFD_GPIO_H
+
+#include <pigpio.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+#include <rpi_ws281x/ws2811.h>
+#include "vfd_display.h"
+
+#define MODE_BUTTON_PIN 22    // Physical pin 16, active high
+#define NEOPIXEL_PIN 18      // Physical pin 12 (GPIO 18)
+#define LED_COUNT 12         // 12-LED NeoPixel ring
+
+// NeoPixel configuration
+#define LED_FREQ     800000  // LED frequency
+#define LED_DMA      10      // DMA channel
+#define LED_INVERT   0       // Don't invert signal
+#define LED_CHANNEL  0       // PWM channel
+#define LED_STRIP    WS2811_STRIP_GRB
+
+typedef enum {
+    MODE_SSH = 0,
+    MODE_LOCAL_KB = 1,
+    MODE_AUTO = 2,
+    MODE_COUNT
+} VFD_Mode;
+
+typedef struct {
+    ws2811_t ws2811;
+    VFD_Mode current_mode;
+    int button_debounce;
+    volatile int mode_changed;
+} GPIO_Control;
+
+// Color definitions for NeoPixel
+#define COLOR_SSH    0x00FF00    // Green
+#define COLOR_LOCAL  0x0000FF    // Blue
+#define COLOR_AUTO   0xFF0000    // Red
+#define COLOR_OFF    0x000000    // Off
+
+// Function declarations
+GPIO_Control* gpio_init(void);
+void gpio_cleanup(GPIO_Control* gpio);
+void update_neopixel_mode(GPIO_Control* gpio);
+void button_callback(int gpio, int level, uint32_t tick);
+const char* get_mode_name(VFD_Mode mode);
+void show_mode_instructions(VFD_Display* vfd, VFD_Mode mode);
+
+#endif
+
+
+
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# File: ./vfd_keyboard.h
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+//===============================
+// FILE: vfd_keyboard.h
+//===============================
+#ifndef VFD_KEYBOARD_H
+#define VFD_KEYBOARD_H
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <termios.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+// Terminal settings
+struct termios orig_termios;
+int is_local_tty = 0;
+
+// Check if we're on a local terminal
+int check_local_terminal() {
+    char *tty_name = ttyname(STDIN_FILENO);
+    if (tty_name && strncmp(tty_name, "/dev/tty", 8) == 0) {
+        return 1;  // Local terminal
+    }
+    return 0;  // SSH or other connection
+}
+
+// Initialize raw mode for keyboard input
+void keyboard_raw_mode() {
+    is_local_tty = check_local_terminal();
+
+    // If local terminal, we need to handle keyboard differently
+    if (is_local_tty) {
+        system("chvt 1");  // Switch to tty1 if not already there
+        system("clear");   // Clear the screen
+    }
+
+    tcgetattr(STDIN_FILENO, &orig_termios);
+    struct termios raw = orig_termios;
+
+    // Disable canonical mode and echo
+    raw.c_lflag &= ~(ECHO | ICANON);
+
+     // Allow Ctrl+C but disable other special character handling
+    raw.c_lflag &= ~(IEXTEN | ICANON | ECHO);
+    raw.c_lflag |= ISIG;  // Make sure ISIG is enabled
+
+    // Disable flow control and other input processing
+    raw.c_iflag &= ~(IXON | ICRNL);
+
+    // Set character timeout
+    raw.c_cc[VMIN] = 0;   // No minimum characters
+    raw.c_cc[VTIME] = 1;  // 0.1 second timeout
+
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+}
+
+// Restore original terminal settings
+void keyboard_restore() {
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
+    if (is_local_tty) {
+        printf("\033[?25h");  // Show cursor
+        system("clear");      // Clear screen
+    }
+}
+
+// Read a key, handling escape sequences
+int read_key() {
+    char c;
+    if (read(STDIN_FILENO, &c, 1) != 1) return -1;
+
+    if (c == 27) {  // ESC character
+        char seq[3];
+
+        if (read(STDIN_FILENO, &seq[0], 1) != 1) return 27;
+        if (read(STDIN_FILENO, &seq[1], 1) != 1) return 27;
+
+        if (seq[0] == '[') {
+            switch (seq[1]) {
+                case 'A': return 1001;  // Up arrow
+                case 'B': return 1002;  // Down arrow
+                case 'C': return 1003;  // Right arrow
+                case 'D': return 1004;  // Left arrow
+                case '3':  // Delete key
+                    if (read(STDIN_FILENO, &seq[2], 1) != 1) return 27;
+                    if (seq[2] == '~') return 1005;
+            }
+        }
+    }
+
+    return c;
+}
+
+#endif
