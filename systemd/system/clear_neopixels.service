@@ -1,0 +1,10 @@
+[Unit]
+Description=Clear Neopixel LEDs at Boot
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/clear_neopixels
+
+[Install]
+WantedBy=multi-user.target

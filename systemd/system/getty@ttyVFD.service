@@ -1,0 +1,17 @@
+[Unit]
+Description=VFD Console
+After=vfd-init.service
+Requires=vfd-init.service
+
+[Service]
+Type=idle
+ExecStartPre=/bin/stty -F /dev/ttyVFD 9600 cs7 parenb -parodd -cstopb crtscts -ixon -ixoff
+ExecStart=-/sbin/agetty -L ttyVFD 9600 vfd
+Restart=always
+Environment=TERM=vfd
+TTYPath=/dev/ttyVFD
+TTYReset=no
+TTYVHangup=no
+
+[Install]
+WantedBy=multi-user.target

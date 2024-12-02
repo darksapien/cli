@@ -1,0 +1,1 @@
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="a729", SYMLINK+="bluetooth-dongle", RUN+="/usr/bin/systemctl restart bluetooth"

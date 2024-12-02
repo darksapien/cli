@@ -1,0 +1,2 @@
+ACTION=="add", KERNEL=="event*", ATTRS{idVendor}=="0471", ATTRS{idProduct}=="0815", SYMLINK+="ir-receiver"
+

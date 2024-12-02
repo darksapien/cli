@@ -1,0 +1,4 @@
+#SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", SYMLINK+="ttyUSBProlific"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="110a", ATTRS{idProduct}=="1110", SYMLINK+="ttyUSBMoxa"
+#SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", SYMLINK+="ttyUSBProlific", MODE="0660", GROUP="uucp"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", SYMLINK+="ttyUSBProlific", MODE="0660", GROUP="uucp", RUN+="/usr/local/bin/set_serial_params.sh"

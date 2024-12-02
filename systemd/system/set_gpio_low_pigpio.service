@@ -1,0 +1,11 @@
+[Unit]
+Description=Set GPIO pins low at boot using pigpio
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/set_gpio_low_pigpio.sh
+RemainAfterExit=true
+
+[Install]
+WantedBy=multi-user.target

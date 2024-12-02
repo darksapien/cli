@@ -1,0 +1,10 @@
+[Unit]
+Description=Disable WiFi Power Management
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/iwconfig wlan0 power off
+
+[Install]
+WantedBy=multi-user.target

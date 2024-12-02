@@ -1,0 +1,10 @@
+# mkinitcpio preset file for the 'linux-rpi' package
+
+#ALL_config="/etc/mkinitcpio.conf"
+ALL_kver="6.12.1-3-rpi"
+
+PRESETS=('default')
+
+#default_config="/etc/mkinitcpio.conf"
+default_image="/boot/initramfs-linux.img"
+#default_options=""

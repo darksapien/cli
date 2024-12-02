@@ -1,0 +1,10 @@
+[Unit]
+Description=Set up DS1307 RTC on I2C bus 4
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo ds1307 0x68 > /sys/class/i2c-adapter/i2c-4/new_device'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target

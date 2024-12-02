@@ -1,0 +1,8 @@
+[Unit]
+Description=IR Listener Service
+
+[Service]
+ExecStart=/path/to/your/compiled/program
+
+[Install]
+WantedBy=multi-user.target

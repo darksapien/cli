@@ -1,0 +1,1 @@
+SUBSYSTEM=="tty", ATTRS{idVendor}=="110a", ATTRS{idProduct}=="1110", SYMLINK+="ttyUSBMoxa", MODE="0660", GROUP="uucp"

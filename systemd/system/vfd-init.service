@@ -1,0 +1,16 @@
+[Unit]
+Description=VFD Display Initialization
+After=dev-ttyUSB0.device
+Before=serial-getty@ttyUSBProlific.service send-ip-vfd.service
+Conflicts=serial-getty@ttyUSBProlific.service
+ConditionPathExists=/dev/ttyUSB0
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sh -c "systemctl stop serial-getty@ttyUSBProlific.service || true"
+ExecStart=/usr/local/bin/vfd-init.sh
+ExecStartPost=/bin/sleep 1
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

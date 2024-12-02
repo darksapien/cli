@@ -1,0 +1,12 @@
+[Unit]
+Description=Wi-Fi Display Service with pigpio
+After=multi-user.target
+
+[Service]
+ExecStart=/usr/bin/python /usr/local/bin/wifi_display_pigpio.py
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
+

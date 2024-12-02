@@ -1,0 +1,17 @@
+[connection]
+id=static-ethernet
+uuid=e6d3fc90-d24f-4d28-a0cb-4aa6450a80f1
+type=ethernet
+interface-name=enu1u5
+
+[ethernet]
+
+[ipv4]
+address1=192.168.2.69/24
+method=manual
+
+[ipv6]
+addr-gen-mode=default
+method=auto
+
+[proxy]

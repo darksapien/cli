@@ -1,0 +1,10 @@
+[Unit]
+Description=Configure serial port for VFD display
+After=dev-ttyUSBProlific.device
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/stty -F /dev/ttyUSBProlific 9600 cs7 evenp -cstopb -ixon -ixoff -crtscts -echo raw
+
+[Install]
+WantedBy=multi-user.target

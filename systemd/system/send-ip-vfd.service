@@ -1,0 +1,11 @@
+[Unit]
+Description=Send IP to VFD after network is up
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/send-ip-to-vfd.sh
+
+[Install]
+WantedBy=multi-user.target
+

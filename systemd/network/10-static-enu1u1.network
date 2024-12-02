@@ -1,0 +1,7 @@
+[Match]
+Name=enu1u1
+
+[Network]
+Address=192.168.2.23/24
+Gateway=192.168.2.254
+DNS=1.1.1.1 9.9.9.9
